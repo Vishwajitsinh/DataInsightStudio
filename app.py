@@ -3,9 +3,12 @@ import pandas as pd
 import io
 import base64
 import time
+import os
 from utils.data_processor import load_data, get_column_types
 from utils.statistics import generate_descriptive_stats, generate_correlation_matrix, analyze_distributions
 from utils.visualization import create_scatter_plot, create_histogram, create_box_plot, create_correlation_heatmap
+from utils.auth import auth_sidebar, init_auth_state
+from utils.database import save_dataset, get_dataset, get_all_datasets, delete_dataset
 
 # Set page configuration
 st.set_page_config(
@@ -123,37 +126,79 @@ if 'stats_options' not in st.session_state:
     st.session_state.stats_options = ["Descriptive Statistics"]
 if 'viz_options' not in st.session_state:
     st.session_state.viz_options = ["Histograms"]
+    
+# Save dataset dialog state
+if 'show_save_dialog' not in st.session_state:
+    st.session_state.show_save_dialog = False
 
-# Sidebar for data upload and options
+# Initialize authentication state
+init_auth_state()
+
+# Sidebar for authentication, data upload and options
 with st.sidebar:
-    st.markdown('<div class="sub-header">Data Upload</div>', unsafe_allow_html=True)
+    # Add authentication section
+    auth_sidebar()
     
-    st.markdown('<div class="upload-container">', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Drop your CSV or Excel file here", type=['csv', 'xlsx', 'xls'])
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Data Management</div>', unsafe_allow_html=True)
     
-    if uploaded_file is not None:
-        # Show loading spinner
-        with st.spinner("Processing your data..."):
-            try:
-                # Load data based on file extension
-                data, filename = load_data(uploaded_file)
-                st.session_state.data = data
-                st.session_state.filename = filename
-                
-                # Get column types for further analysis
-                st.session_state.column_types = get_column_types(data)
-                
-                # Success message with custom styling
-                st.markdown(f"""
-                <div class="success-message">
-                    <strong>✅ Success!</strong> Loaded {filename}<br>
-                    📊 {data.shape[0]} rows × {data.shape[1]} columns
-                </div>
-                """, unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Error loading data: {str(e)}")
+    # Dataset tabs for upload or loading
+    dataset_action = st.radio("Dataset Source:", ["Upload New", "Load Saved"], horizontal=True)
     
+    if dataset_action == "Upload New":
+        st.markdown('<div class="upload-container">', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Drop your CSV or Excel file here", type=['csv', 'xlsx', 'xls'])
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        if uploaded_file is not None:
+            # Show loading spinner
+            with st.spinner("Processing your data..."):
+                try:
+                    # Load data based on file extension
+                    data, filename = load_data(uploaded_file)
+                    st.session_state.data = data
+                    st.session_state.filename = filename
+                    
+                    # Get column types for further analysis
+                    st.session_state.column_types = get_column_types(data)
+                    
+                    # Success message with custom styling
+                    st.markdown(f"""
+                    <div class="success-message">
+                        <strong>✅ Success!</strong> Loaded {filename}<br>
+                        📊 {data.shape[0]} rows × {data.shape[1]} columns
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Save dataset to database if user is authenticated
+                    if st.session_state.is_authenticated and st.button("💾 Save Dataset to Database"):
+                        description = st.text_area("Dataset Description (optional):", key="dataset_description")
+                        file_type = filename.split('.')[-1]
+                        is_public = st.checkbox("Make Dataset Public", value=False, key="is_public")
+                        
+                        try:
+                            dataset_name = filename.split('.')[0]  # Remove extension
+                            dataset_id = save_dataset(
+                                dataset_name,
+                                description,
+                                filename,
+                                st.session_state.data,
+                                st.session_state.column_types
+                            )
+                            if dataset_id:
+                                st.success(f"Dataset '{dataset_name}' saved successfully!")
+                                st.session_state.show_save_dialog = False
+                            else:
+                                st.error("Failed to save dataset. Please try again.")
+                        except Exception as e:
+                            st.error(f"Error saving dataset: {str(e)}")
+                    
+                except Exception as e:
+                    st.error(f"Error loading data: {str(e)}")
+    else:  # Load Saved
+        st.info("Navigate to the 'Saved Datasets' page to view and load your saved datasets.")
+        if st.button("Go to Saved Datasets"):
+            st.switch_page("pages/saved_datasets.py")
+            
     # Display options only if data is loaded
     if st.session_state.data is not None:
         st.markdown('<div class="sub-header">Analysis Options</div>', unsafe_allow_html=True)
@@ -172,6 +217,28 @@ with st.sidebar:
             default=st.session_state.viz_options
         )
         
+        # Add a "Save Dataset" button if data exists and not already saved
+        if st.session_state.data is not None and st.session_state.is_authenticated:
+            if st.button("💾 Save Current Dataset"):
+                dataset_name = st.text_input("Dataset Name:", value=st.session_state.filename.split('.')[0] if st.session_state.filename else "My Dataset")
+                description = st.text_area("Description (optional):")
+                
+                if st.button("Confirm Save"):
+                    try:
+                        dataset_id = save_dataset(
+                            dataset_name,
+                            description,
+                            st.session_state.filename,
+                            st.session_state.data,
+                            st.session_state.column_types
+                        )
+                        if dataset_id:
+                            st.success(f"Dataset '{dataset_name}' saved successfully!")
+                        else:
+                            st.error("Failed to save dataset. Please try again.")
+                    except Exception as e:
+                        st.error(f"Error saving dataset: {str(e)}")
+        
         # Add a divider
         st.markdown("---")
         
@@ -181,7 +248,9 @@ with st.sidebar:
             "Use histograms to understand data distribution",
             "Correlation heatmaps help identify relationships",
             "Box plots are perfect for detecting outliers",
-            "Hover over charts for interactive details"
+            "Hover over charts for interactive details",
+            "Save your datasets to access them later",
+            "Log in to save your analyses and visualizations"
         ]
         tip_idx = int(time.time()) % len(tips)  # Cycle through tips
         st.info(tips[tip_idx])
